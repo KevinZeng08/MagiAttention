@@ -18,10 +18,10 @@ import torch
 import torch.distributed as dist
 
 import magi_attention
-from magi_attention.comm.primitive.magi_nccl_interface import (  # type: ignore[attr-defined]
-    MagiNCCLBackend,
-)
-from magi_attention.comm.primitive.utils import get_pg_backend
+
+# from magi_attention.comm.primitive.magi_nccl_interface import (  # type: ignore[attr-defined]
+#     MagiNCCLBackend,
+# )
 from magi_attention.common import AttnRanges
 from magi_attention.common.enum import AttnMaskType
 from magi_attention.config import (
@@ -300,9 +300,9 @@ def assert_close_to_torch_ref(
             print("\n\n".join(err_msg_list))
 
 
-backend = get_pg_backend(group)
-if magi_attention.is_magi_nccl_backend_enable():
-    assert isinstance(backend, MagiNCCLBackend)
+# backend = get_pg_backend(group)
+# if magi_attention.is_magi_nccl_backend_enable():
+#     assert isinstance(backend, MagiNCCLBackend)
 
 profile_mode = os.environ.get("DEBUG_PROFILE_MODE", "0") == "1"
 
@@ -402,7 +402,7 @@ dist_attn_config = DistAttnConfig(
     dispatch_config=DispatchConfig(alg=MinHeapDispatchAlg()),
     overlap_config=OverlapConfig(enable=False),
     high_bandwith_domain_size=1,
-    deterministic=True,
+    deterministic=False,
 )
 
 

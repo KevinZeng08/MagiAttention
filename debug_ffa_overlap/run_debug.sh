@@ -66,8 +66,8 @@ export NCCL_DEBUG_SUBSYS=1
 # export MAGI_ATTENTION_HIERARCHICAL_COMM=1
 export MAGI_ATTENTION_SANITY_CHECK=1
 
-export MAGI_NCCL_BACKEND=1 # whether to use magi_nccl backend
-# export MAGI_ATTENTION_USE_BATCH_P2P_FOR_GROUP_COLLECTIVE=0 # whether to use batch p2p instead of a2av with nccl backend
+# export MAGI_NCCL_BACKEND=1 # whether to use magi_nccl backend
+export MAGI_ATTENTION_USE_BATCH_P2P_FOR_GROUP_COLLECTIVE=1 # whether to use batch p2p instead of a2av with nccl backend
 
 
 # --------  for magi-attn debug -------- #

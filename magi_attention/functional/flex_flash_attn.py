@@ -89,7 +89,7 @@ def _flex_flash_attn_forward(
             sm_margin,
             disable_fwd_atomic_reduction,
             return_dtype,
-            deterministic,
+            # deterministic,
         )
 
     return out, softmax_lse

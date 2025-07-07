@@ -19,7 +19,8 @@ import torch
 import torch.distributed as dist
 
 import magi_attention
-from magi_attention.comm.primitive.magi_nccl_interface import group_cast, group_reduce
+
+# from magi_attention.comm.primitive.magi_nccl_interface import group_cast, group_reduce
 from magi_attention.comm.work import WorkWithPostProcessFn
 from magi_attention.utils import nvtx
 
@@ -135,25 +136,25 @@ def group_cast_collective(
             **kwargs,
         )
 
-    if magi_attention.is_magi_nccl_backend_enable():
-        # NOTE: use native group-cast if magi_nccl backend is enabled
-        work = group_cast(
-            input=input,
-            output=output,
-            input_split_size_list=input_split_size_list,
-            output_split_size_list=output_split_size_list,
-            dst_indices_list=dst_indices_list,
-            src_index_list=src_index_list,
-            group=group,
-            async_op=async_op,
-            **kwargs,
-        )
+    # if magi_attention.is_magi_nccl_backend_enable():
+    #     # NOTE: use native group-cast if magi_nccl backend is enabled
+    #     work = group_cast(
+    #         input=input,
+    #         output=output,
+    #         input_split_size_list=input_split_size_list,
+    #         output_split_size_list=output_split_size_list,
+    #         dst_indices_list=dst_indices_list,
+    #         src_index_list=src_index_list,
+    #         group=group,
+    #         async_op=async_op,
+    #         **kwargs,
+    #     )
 
-        return WorkWithPostProcessFn(
-            work=work,
-            post_process_fn=lambda x: x,
-            sync=not async_op,
-        )
+    #     return WorkWithPostProcessFn(
+    #         work=work,
+    #         post_process_fn=lambda x: x,
+    #         sync=not async_op,
+    #     )
 
     if magi_attention.use_batch_p2p_for_group_collective():
         # NOTE: here, we use batch p2p to implement group-cast using nccl backend
@@ -318,25 +319,25 @@ def group_reduce_collective(
         f"but got {sum(output_split_size_list)=} and {output.shape[0]=}"
     )
 
-    if magi_attention.is_magi_nccl_backend_enable():
-        # NOTE: use native group-reduce if magi_nccl backend is enabled
-        work = group_reduce(
-            input=input,
-            output=output,
-            input_split_size_list=input_split_size_list,
-            output_split_size_list=output_split_size_list,
-            dst_index_list=dst_index_list,
-            src_indices_list=src_indices_list,
-            group=group,
-            async_op=async_op,
-            **kwargs,
-        )
+    # if magi_attention.is_magi_nccl_backend_enable():
+    #     # NOTE: use native group-reduce if magi_nccl backend is enabled
+    #     work = group_reduce(
+    #         input=input,
+    #         output=output,
+    #         input_split_size_list=input_split_size_list,
+    #         output_split_size_list=output_split_size_list,
+    #         dst_index_list=dst_index_list,
+    #         src_indices_list=src_indices_list,
+    #         group=group,
+    #         async_op=async_op,
+    #         **kwargs,
+    #     )
 
-        return WorkWithPostProcessFn(
-            work=work,
-            post_process_fn=lambda x: x,
-            sync=not async_op,
-        )
+    #     return WorkWithPostProcessFn(
+    #         work=work,
+    #         post_process_fn=lambda x: x,
+    #         sync=not async_op,
+    #     )
 
     # ---------    calc group reduce a2a args     --------- #
 
