@@ -631,8 +631,8 @@ struct CollectiveMainloopBwdSm90 {
                 tma_store_arrive();
             }
             // Note, the for_each() function is required here to ensure `warpgroup_idx` is of type Int<x>.
+            if (lane_predicate) { tma_store_wait<0>(); }
             for_each(make_int_sequence<NumMmaWarpGroups>{}, [&] (auto warpgroup_idx) {
-                if (lane_predicate) { tma_store_wait<NumMmaWarpGroups - 1 - CUTE_STATIC_V(warpgroup_idx)>(); }
                 cutlass::arch::NamedBarrier::arrive(cutlass::NumThreadsPerWarpGroup + cutlass::NumThreadsPerWarp, static_cast<uint32_t>(BwdNamedBarriers::dQEmptyWG1) + warpgroup_idx /*id*/);  // sdQ empty, ready to be written to
             });
         }

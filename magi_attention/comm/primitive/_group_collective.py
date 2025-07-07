@@ -107,12 +107,12 @@ def group_cast_collective(
         f"but got {sum(output_split_size_list)=} and {output.shape[0]=}"
     )
 
-    print(
-        f"[RANK{dist.get_rank()}] Group-Cast Args:"
-        f"\n{input.shape=}\n{output.shape=}"
-        f"\n{input_split_size_list=}\n{output_split_size_list=}"
-        f"\n{dst_indices_list=}\n{src_index_list=}\n"
-    )
+    # print(
+    #     f"[RANK{dist.get_rank()}] Group-Cast Args:"
+    #     f"\n{input.shape=}\n{output.shape=}"
+    #     f"\n{input_split_size_list=}\n{output_split_size_list=}"
+    #     f"\n{dst_indices_list=}\n{src_index_list=}\n"
+    # )
 
     if magi_attention.is_hierarchical_comm_enable():
         assert (

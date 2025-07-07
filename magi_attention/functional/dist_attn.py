@@ -19,6 +19,7 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from flash_attn_interface import _flash_attn_backward, _flash_attn_forward
 
 import magi_attention
 from magi_attention.comm.primitive import group_cast_collective, group_reduce_collective
@@ -276,6 +277,10 @@ class DistFlashAttnRuntime:
 
         skip_attn = attn_arg.can_skip(is_bwd=False)
 
+        debug_fwd_use_fa3 = (
+            os.environ.get("MAGI_ATTENTION_DEBUG_FWD_USE_FA3", "0") == "1"
+        )
+
         # DE-BUG
         logger.debug(
             f"RANK: {dist.get_rank()}, {q.shape=}, {kv.shape=}, "
@@ -310,24 +315,59 @@ class DistFlashAttnRuntime:
                     f"attn-fwd: area={attn_arg.total_area} | "
                     f"qr={attn_arg.q_ranges} | kr={attn_arg.k_ranges}"
                 ):
-                    out, lse, *rest = _flex_flash_attn_forward(
-                        q=q,
-                        k=k,
-                        v=v,
-                        **attn_arg.to_ffa_args(is_bwd=False),
-                        merge_q_ranges=None,
-                        qk_map=None,
-                        softmax_scale=q.shape[-1] ** -0.5,
-                        deterministic=deterministic,
-                        softcap=0.0,
-                        sm_margin=0
-                        if magi_attention.is_cuda_device_max_connections_one()
-                        else 4,  # TODO: make it configurable
-                        # NOTE: increase the partial out precision temporarily,
-                        # to reduce the error caused by the out correction
-                        return_dtype=max_fp_dtype(q.dtype, torch.float32),
-                        disable_fwd_atomic_reduction=attn_arg.disable_fwd_atomic_reduction,
-                    )
+                    if debug_fwd_use_fa3:
+                        out, lse, *rest = _flash_attn_forward(
+                            q.unsqueeze(0),
+                            k.unsqueeze(0),
+                            v.unsqueeze(0),
+                            None,
+                            None,  # k_new, v_new
+                            None,  # qv
+                            None,  # out
+                            None,
+                            None,
+                            None,  # cu_seqlens_q/k/k_new
+                            None,
+                            None,  # seqused_q/k
+                            None,
+                            None,  # max_seqlen_q/k
+                            None,
+                            None,
+                            None,  # page_table, kv_batch_idx, leftpad_k,
+                            None,
+                            None,
+                            None,  # rotary_cos/sin, seqlens_rotary
+                            None,
+                            None,
+                            None,
+                            softmax_scale=q.shape[-1] ** -0.5,
+                            causal=False,
+                            window_size=(-1, -1),
+                            sm_margin=0
+                            if magi_attention.is_cuda_device_max_connections_one()
+                            else 32,
+                        )
+                        out = out.to(max_fp_dtype(q.dtype, torch.float32)).squeeze(0)
+                        lse = lse.squeeze(0)
+                    else:
+                        out, lse, *rest = _flex_flash_attn_forward(
+                            q=q,
+                            k=k,
+                            v=v,
+                            **attn_arg.to_ffa_args(is_bwd=False),
+                            merge_q_ranges=None,
+                            qk_map=None,
+                            softmax_scale=q.shape[-1] ** -0.5,
+                            deterministic=deterministic,
+                            softcap=0.0,
+                            sm_margin=0
+                            if magi_attention.is_cuda_device_max_connections_one()
+                            else 32,  # TODO: make it configurable
+                            # NOTE: increase the partial out precision temporarily,
+                            # to reduce the error caused by the out correction
+                            return_dtype=max_fp_dtype(q.dtype, torch.float32),
+                            disable_fwd_atomic_reduction=attn_arg.disable_fwd_atomic_reduction,
+                        )
 
         return out, lse, skip_attn
 
@@ -357,6 +397,10 @@ class DistFlashAttnRuntime:
 
         skip_attn = attn_arg.can_skip(is_bwd=True)
 
+        debug_bwd_use_fa3 = (
+            os.environ.get("MAGI_ATTENTION_DEBUG_BWD_USE_FA3", "0") == "1"
+        )
+
         if skip_attn:
             partial_dq, partial_dkv = torch.empty_like(q), torch.empty_like(kv)
         else:
@@ -372,24 +416,65 @@ class DistFlashAttnRuntime:
                     attn_arg=attn_arg,
                 )
             else:
-                # TODO: pre-allocate the dkdv buffer to avoid dkv concat
-                partial_dq, partial_dk, partial_dv, *rest = _flex_flash_attn_backward(
-                    dout=do,
-                    q=q,
-                    k=k,
-                    v=v,
-                    out=o,
-                    softmax_lse=lse,
-                    **attn_arg.to_ffa_args(is_bwd=True),
-                    merge_k_ranges=None,
-                    bwd_kq_map=None,
-                    softmax_scale=q.shape[-1] ** -0.5,
-                    deterministic=deterministic,
-                    softcap=0.0,
-                    sm_margin=0
-                    if magi_attention.is_cuda_device_max_connections_one()
-                    else 4,  # TODO: make it configurable
-                )
+                if debug_bwd_use_fa3:
+                    # non-varlen interface
+                    dq, dk, dv = (
+                        torch.empty_like(q.unsqueeze(0)),
+                        torch.empty_like(k.unsqueeze(0)),
+                        torch.empty_like(v.unsqueeze(0)),
+                    )
+                    _flash_attn_backward(
+                        do.unsqueeze(0),
+                        q.unsqueeze(0),
+                        k.unsqueeze(0),
+                        v.unsqueeze(0),
+                        o.unsqueeze(0),
+                        lse.unsqueeze(0),
+                        None,
+                        None,  # cu_seqlens_q, cu_seqlens_k,
+                        None,
+                        None,  # sequed_q, sequed_k,
+                        None,
+                        None,  # max_seqlen_q, max_seqlen_k,
+                        dq,
+                        dk,
+                        dv,
+                        q.shape[-1] ** -0.5,  # softmax_scale
+                        False,  # causal
+                        (-1, -1),  # window_size
+                        0.0,  # softcap
+                        False,  # deterministic
+                        sm_margin=0
+                        if magi_attention.is_cuda_device_max_connections_one()
+                        else 32,
+                    )
+                    partial_dq = dq.squeeze(0)
+                    partial_dk = dk.squeeze(0)
+                    partial_dv = dv.squeeze(0)
+                else:
+                    # TODO: pre-allocate the dkdv buffer to avoid dkv concat
+                    (
+                        partial_dq,
+                        partial_dk,
+                        partial_dv,
+                        *rest,
+                    ) = _flex_flash_attn_backward(
+                        dout=do,
+                        q=q,
+                        k=k,
+                        v=v,
+                        out=o,
+                        softmax_lse=lse,
+                        **attn_arg.to_ffa_args(is_bwd=True),
+                        merge_k_ranges=None,
+                        bwd_kq_map=None,
+                        softmax_scale=q.shape[-1] ** -0.5,
+                        deterministic=deterministic,
+                        softcap=0.0,
+                        sm_margin=0
+                        if magi_attention.is_cuda_device_max_connections_one()
+                        else 32,  # TODO: make it configurable
+                    )
             partial_dkv = torch.cat([partial_dk, partial_dv], dim=0)
 
         return partial_dq, partial_dkv, skip_attn

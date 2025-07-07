@@ -66,12 +66,14 @@ export NCCL_DEBUG_SUBSYS=1
 # export MAGI_ATTENTION_HIERARCHICAL_COMM=1
 export MAGI_ATTENTION_SANITY_CHECK=1
 
-export MAGI_NCCL_BACKEND=0 # whether to use magi_nccl backend
-export MAGI_ATTENTION_USE_BATCH_P2P_FOR_GROUP_COLLECTIVE=1 # whether to use batch p2p instead of a2av with nccl backend
+export MAGI_NCCL_BACKEND=1 # whether to use magi_nccl backend
+# export MAGI_ATTENTION_USE_BATCH_P2P_FOR_GROUP_COLLECTIVE=0 # whether to use batch p2p instead of a2av with nccl backend
 
 
 # --------  for magi-attn debug -------- #
 
+export MAGI_ATTENTION_DEBUG_FWD_USE_FA3=0
+export MAGI_ATTENTION_DEBUG_BWD_USE_FA3=0
 export MAGI_ATTENTION_DEBUG_FWD_USE_REF=none # whether to use ref tensors for fwd, choose from get, set, none
 export MAGI_ATTENTION_DEBUG_BWD_USE_REF=none # whether to use ref tensors for bwd, choose from get, set, none
 export MAGI_ATTENTION_DEBUG_DUMMY_ALL2ALLV_TIMES=0 # set it larger to let all2all-v slower
