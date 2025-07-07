@@ -476,12 +476,6 @@ class DistFlashAttnFunc(torch.autograd.Function):
         debug_fwd_use_ref = os.getenv("MAGI_ATTENTION_DEBUG_FWD_USE_REF", "none")
 
         if debug_fwd_use_ref == "set":
-            if os.path.exists(f"ref_kv_{dist.get_rank()}.pt"):
-                ref_kv = torch.load(
-                    f"ref_kv_{dist.get_rank()}.pt",
-                    map_location=f"cuda:{torch.cuda.current_device()}",
-                )
-
             if os.path.exists(f"ref_local_kv_{dist.get_rank()}.pt"):
                 ref_local_kv = torch.load(
                     f"ref_local_kv_{dist.get_rank()}.pt",
@@ -587,7 +581,7 @@ class DistFlashAttnFunc(torch.autograd.Function):
             # overlapped with (i+1)th remote kv comm
             out, lse, skip_attn = dist_attn_runtime.attn_fwd_partial(
                 q=local_q,
-                kv=ref_kv if debug_fwd_use_ref == "set" else curr_remote_kv,
+                kv=curr_remote_kv,
                 overlap_stage=ith_overlap_stage,
                 deterministic=dist_attn_runtime.deterministic,
             )

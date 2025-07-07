@@ -25,7 +25,6 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 # --------  for cuda -------- #
 
-
 # export CUDA_LAUNCH_BLOCKING=1
 # export CUDA_DEVICE_MAX_CONNECTIONS=1
 # export TORCH_NCCL_AVOID_RECORD_STREAMS=1
@@ -60,29 +59,6 @@ export NCCL_DEBUG_SUBSYS=1
 # export NCCL_NCHANNELS_PER_NET_PEER=1
 # export NCCL_WORK_FIFO_BYTES=1073741824
 
-# --------  for magi-attn -------- #
-
-# export MAGI_ATTENTION_UNITEST_PROFILE_MODE=1
-# export MAGI_ATTENTION_HIERARCHICAL_COMM=1
-export MAGI_ATTENTION_SANITY_CHECK=1
-
-export MAGI_NCCL_BACKEND=0 # whether to use magi_nccl backend
-export MAGI_ATTENTION_USE_BATCH_P2P_FOR_GROUP_COLLECTIVE=1 # whether to use batch p2p instead of a2av with nccl backend
-
-
-# --------  for magi-attn debug -------- #
-
-export MAGI_ATTENTION_DEBUG_FWD_USE_REF=none # whether to use ref tensors for fwd, choose from get, set, none
-export MAGI_ATTENTION_DEBUG_BWD_USE_REF=none # whether to use ref tensors for bwd, choose from get, set, none
-export MAGI_ATTENTION_DEBUG_DUMMY_ALL2ALLV_TIMES=0 # set it larger to let all2all-v slower
-
-
-# --------  for script -------- #
-
-export DEBUG_PROFILE_MODE=0 # whether to profile, default with nsys
-export DEBUG_USE_NCU_FOR_PROFILE=0 # whether to profile with ncu
-export DEBUG_SANITIZER_MODE=0 # whether to use compute-sanitizer, but seem useless for multi-proc
-
 
 # --------  run cmds -------- #
 
@@ -92,26 +68,11 @@ CMD="torchrun \
     --nproc_per_node=$WORLD_SIZE \
     --master_addr=$MASTER_ADDRESS \
     --master_port=$MASTER_PORT \
-    debug.py
+    group_cast_reproduce.py
 "
 
-if [[ $DEBUG_PROFILE_MODE == "1" ]]; then
-    if [[ $DEBUG_USE_NCU_FOR_PROFILE == "1" ]]; then
-        ncu \
-            --target-processes all \
-            --set full \
-            --kernel-name device_kernel \
-            -f -o debug.ncu-rep \
-            $CMD > debug.log 2>&1
-    else
-        nsys profile \
-            --force-overwrite true \
-            -o debug.nsys-rep \
-            --capture-range=cudaProfilerApi \
-            $CMD > debug.log 2>&1
-    fi
-elif [[ $DEBUG_SANITIZER_MODE == "1" ]]; then
-    compute-sanitizer --tool memcheck $CMD > debug.log 2>&1
-else
-    $CMD > debug.log 2>&1
-fi
+nsys profile \
+    --force-overwrite true \
+    -o group_cast_reproduce.nsys-rep \
+    --capture-range=cudaProfilerApi \
+    $CMD > group_cast_reproduce.log 2>&1

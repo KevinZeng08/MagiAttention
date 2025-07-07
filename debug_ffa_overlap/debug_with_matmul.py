@@ -15,43 +15,18 @@
 import os
 
 import torch
-import torch.distributed as dist
 
 import magi_attention
-from magi_attention.comm.primitive.magi_nccl_interface import (  # type: ignore[attr-defined]
-    MagiNCCLBackend,
-)
-from magi_attention.comm.primitive.utils import get_pg_backend
 from magi_attention.common import AttnRanges
-from magi_attention.common.enum import AttnMaskType
-from magi_attention.config import (
-    DispatchConfig,
-    DistAttnConfig,
-    MinHeapDispatchAlg,
-    OverlapConfig,
-)
-from magi_attention.dist_attn_runtime_mgr import (
-    DistAttnRuntimeMgr,
-    init_dist_attn_runtime_mgr,
-)
+from magi_attention.functional import flex_flash_attn_func
 from magi_attention.testing.precision import (
     EPSILON,
     calc_inf_norm,
     extract_mismatch_threshold,
     torch_attn_ref,
 )
-from magi_attention.utils import (
-    clearup_dist_env,
-    get_attn_mask_from_ranges,
-    setup_dist_env,
-)
+from magi_attention.utils import get_attn_mask_from_ranges
 
-rank, world_size, group, device, manual_seed = setup_dist_env(
-    backend="cpu:gloo,cuda:magi_nccl"
-    if magi_attention.is_magi_nccl_backend_enable()
-    else "cpu:gloo,cuda:nccl",
-    base_seed=42,
-)
 device = torch.cuda.current_device()
 
 
@@ -296,15 +271,11 @@ def assert_close_to_torch_ref(
     # -----   raise error if any error occurs   ---- #
 
     if err_msg_list:
-        if rank == 0:
-            print("\n\n".join(err_msg_list))
+        print("\n\n".join(err_msg_list))
 
-
-backend = get_pg_backend(group)
-if magi_attention.is_magi_nccl_backend_enable():
-    assert isinstance(backend, MagiNCCLBackend)
 
 profile_mode = os.environ.get("DEBUG_PROFILE_MODE", "0") == "1"
+run_side_matmul = os.environ.get("DEBUG_RUN_SIDE_MATMUL", "0") == "1"
 
 if profile_mode:  # [start_iter, end_iter)
     prof_iters, prof_start_iter, prof_end_iter = 10, 2, 9
@@ -315,7 +286,6 @@ else:
 is_run_bwd = True
 num_heads, head_dim = 1, 128
 dtype = torch.float16
-
 
 times = 1
 name = f"varlen_block_causal_{12 * times}k_with_q_overlap"
@@ -398,100 +368,143 @@ chunk_size = 512 * times
 # chunk_size = 512 // 2
 
 
-dist_attn_config = DistAttnConfig(
-    dispatch_config=DispatchConfig(alg=MinHeapDispatchAlg()),
-    overlap_config=OverlapConfig(enable=False),
-    high_bandwith_domain_size=1,
-    deterministic=True,
+q_range_tensor = q_ranges.to_tensor(device=device)
+k_range_tensor = k_ranges.to_tensor(device=device)
+max_seqlen_q = q_ranges.max_seqlen
+max_seqlen_k = k_ranges.max_seqlen
+attn_type_map = torch.tensor(
+    [1 if is_causal else 0 for is_causal in is_causal_mapping],
+    dtype=torch.int32,
+    device=device,
 )
+
+
+torch.manual_seed(42)
+
+
+# -----   init global qkv   ---- #
+
+total_q = torch.randn(
+    total_seqlen_q,
+    num_heads,
+    head_dim,
+    device=device,
+    dtype=dtype,
+    requires_grad=is_run_bwd,
+)
+total_k = torch.randn(
+    total_seqlen_k,
+    num_heads,
+    head_dim,
+    device=device,
+    dtype=dtype,
+    requires_grad=is_run_bwd,
+)
+total_v = torch.randn(
+    total_seqlen_k,
+    num_heads,
+    head_dim,
+    device=device,
+    dtype=dtype,
+    requires_grad=is_run_bwd,
+)
+
+grad_total_out = torch.randn_like(total_q).detach()
+
+
+# prepare side matmul
+if run_side_matmul:
+    side_stream = torch.cuda.Stream()
+
+    # m, n, k = 16 * 1024, 16 * 1024, 8 * 1024
+    # a = torch.randn(m, k, device=device, dtype=dtype)
+    # b = torch.randn(k, n, device=device, dtype=dtype)
+
+    total_q_fork = torch.randn(
+        total_seqlen_q,
+        num_heads * 10,
+        head_dim,
+        device=device,
+        dtype=dtype,
+        requires_grad=False,
+    )
+    total_k_fork = torch.randn(
+        total_seqlen_k,
+        num_heads * 10,
+        head_dim,
+        device=device,
+        dtype=dtype,
+        requires_grad=False,
+    )
+    total_v_fork = torch.randn(
+        total_seqlen_k,
+        num_heads * 10,
+        head_dim,
+        device=device,
+        dtype=dtype,
+        requires_grad=False,
+    )
+
+    grad_total_out_fork = torch.randn_like(total_q_fork).detach()
 
 
 # -----    run pipeline test   ---- #
 
 for iter in range(prof_iters):
-    torch.manual_seed(42)
     # -----    profile control if using profile mode   ---- #
 
     if profile_mode:
-        if rank == 0 and iter == prof_start_iter:
+        if iter == prof_start_iter:
             torch.cuda.profiler.start()
             torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
-        if rank == 0 and iter == prof_end_iter:
+        if iter == prof_end_iter:
             torch.cuda.profiler.stop()
 
     # -----    barrier at the beginning of each iteration   ---- #
 
-    dist.barrier()
     torch.cuda.synchronize()
 
-    # -----    init dist attn runtime mgr   ---- #
+    if run_side_matmul:
+        with torch.cuda.stream(side_stream):
+            # c = a @ b
+            flex_flash_attn_func(
+                q=total_q_fork,
+                k=total_k_fork,
+                v=total_v_fork,
+                q_ranges=q_range_tensor,
+                k_ranges=k_range_tensor,
+                max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_k,
+                attn_type_map=attn_type_map,
+                deterministic=True,
+                sm_margin=90,
+            )
 
-    dist_attn_runtime_mgr: DistAttnRuntimeMgr = init_dist_attn_runtime_mgr(
-        q_ranges=q_ranges,
-        k_ranges=k_ranges,
-        attn_mask_type=[
-            AttnMaskType.CAUSAL if is_causal else AttnMaskType.FULL
-            for is_causal in is_causal_mapping
-        ],
-        total_seqlen_q=total_seqlen_q,
-        total_seqlen_k=total_seqlen_k,
-        chunk_size=chunk_size,
-        cp_group=group,
-        is_same_source=True,
-        is_q_permutable=True,
-        is_k_permutable=True,
-        dist_attn_config=dist_attn_config,
-        cp_mesh=None,
+    # -----   run ffa forward   ---- #
+
+    total_out, _ = flex_flash_attn_func(
+        q=total_q,
+        k=total_k,
+        v=total_v,
+        q_ranges=q_range_tensor,
+        k_ranges=k_range_tensor,
+        max_seqlen_q=max_seqlen_q,
+        max_seqlen_k=max_seqlen_k,
+        attn_type_map=attn_type_map,
+        deterministic=True,
+        sm_margin=32,
     )
 
-    # -----   init global qkv   ---- #
-
-    total_q = torch.randn(
-        total_seqlen_q,
-        num_heads,
-        head_dim,
-        device=device,
-        dtype=dtype,
-        requires_grad=is_run_bwd,
-    )
-    total_k = torch.randn(
-        total_seqlen_k,
-        num_heads,
-        head_dim,
-        device=device,
-        dtype=dtype,
-        requires_grad=is_run_bwd,
-    )
-    total_v = torch.randn(
-        total_seqlen_k,
-        num_heads,
-        head_dim,
-        device=device,
-        dtype=dtype,
-        requires_grad=is_run_bwd,
-    )
-    dist.all_reduce(total_q.data, group=group)
-    dist.all_reduce(total_k.data, group=group)
-    dist.all_reduce(total_v.data, group=group)
-
-    # -----   dispatch global qkv to local qkv   ---- #
-
-    local_q = dist_attn_runtime_mgr.dispatch_qo(total_q)
-    local_k = dist_attn_runtime_mgr.dispatch_kv(total_k)
-    local_v = dist_attn_runtime_mgr.dispatch_kv(total_v)
-
-    # -----   run dist attn forward on local qkv for local o   ---- #
-
-    local_out, _ = dist_attn_runtime_mgr.calc_attn(local_q, local_k, local_v)
-
-    # -----   undispatch local o to global o   ---- #
-
-    total_out = dist_attn_runtime_mgr.undispatch_qo(local_out)
+    # -----   run ffa backward   ---- #
 
     if is_run_bwd:
-        grad_total_out = torch.randn_like(total_out).detach()
-        dist.all_reduce(grad_total_out.data, group=group)
+        total_q.grad = None
+        total_k.grad = None
+        total_v.grad = None
         total_out.backward(grad_total_out)
+
+        # -----   run side matmul   ---- #
+
         grad_total_q, grad_total_k, grad_total_v = (
             total_q.grad,
             total_k.grad,
@@ -523,5 +536,3 @@ for iter in range(prof_iters):
         run_bwd=is_run_bwd,
         test_case=name,
     )
-
-clearup_dist_env()
