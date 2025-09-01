@@ -50,7 +50,8 @@ template <
     class ArchTag_,
     bool Has_softcap_,
     bool MmaPV_is_RS_,
-    bool IntraWGOverlap_>
+    bool IntraWGOverlap_,
+    bool SwapAB_>
 struct CollectiveMainloopFwdSm90 {
   static constexpr int kStages = Stages;
   using ClusterShape = ClusterShape_;

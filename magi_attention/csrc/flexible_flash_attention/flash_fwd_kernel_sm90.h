@@ -56,6 +56,7 @@ class FlashAttnFwdSm90 {
   static constexpr int NumProducerThreads = CollectiveMainloop::NumProducerThreads;
   static constexpr int NumMmaThreadsQK = CollectiveMainloop::NumMmaThreadsQK;
   static constexpr bool Deterministic = CollectiveEpilogue::Deterministic;
+  static constexpr bool SwapAB = CollectiveMainloop::SwapAB;
 
   using SeqlenInfo_t = typename CollectiveMainloop::SeqlenInfo_t;
 

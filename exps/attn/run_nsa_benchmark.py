@@ -43,10 +43,10 @@ def create_cu_seqlens(seqlen: int) -> torch.Tensor:
     return torch.arange(0, 2 * seqlen, seqlen, dtype=torch.int32)
 
 
-impls = ["ffa", "fsa", "nsa_ref"]
+impls = ["ffa"]
 
 # actual seqlen
-seqlens = [65536]
+seqlens = [32768]
 
 sparsity_ratio = [0.1, 0.2]
 # ss = [k * 1024 for k in [4, 96, 128]]
@@ -55,7 +55,7 @@ wds = ["fwd"]
 attn_modes = ["GQA"]  # MHA, GQA
 nhqs = [32]
 num_group = 8
-block_sizes = [64, 128]
+block_sizes = [128]
 
 b = 1
 
@@ -261,6 +261,7 @@ def sparse_attn_benchmark(
                     softmax_scale=sm_scale,
                     auto_range_merge=True,  # we should enable auto_range_merge for block sparse mask.
                     # ref_block_size=[num_group, block_size], # TODO: support SwapAB
+                    swap_ab=True
                 )
 
             if wd == "bwd":

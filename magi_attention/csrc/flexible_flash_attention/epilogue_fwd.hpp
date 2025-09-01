@@ -43,7 +43,8 @@ template <
     class BlockCoordType_,
     int NumEpilogueThreads_,
     bool DisableFwdAtomicReduction_,
-    bool Deterministic_ = false>
+    bool Deterministic_ = false,
+    bool SwapAB_ = false>
 struct CollectiveEpilogueFwd {
   // KblockM, Kheaddim, KblockN
   using TileShape_MNK_PV = TileShape_MNK_PV_;

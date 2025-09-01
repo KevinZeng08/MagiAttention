@@ -194,6 +194,7 @@ def _flex_flash_attn_forward_compilable(
     out_type: torch.dtype | None,
     deterministic: bool,
     sm_margin: int,
+    swap_ab: bool,
 ) -> None:
     """torch.ops.flex_flash_attn._flex_flash_attn_forward_compilable"""
     q, k, v, q_ranges, k_ranges = [
@@ -210,6 +211,7 @@ def _flex_flash_attn_forward_compilable(
         ref_block_size=(kblock_m, kblock_n)
         if kblock_m is not None and kblock_n is not None
         else None,
+        swap_ab=swap_ab
     )
 
     out_, lse = mod.fwd(
@@ -284,6 +286,7 @@ def _flex_flash_attn_forward(
     out_type: torch.dtype | None,
     deterministic: bool,
     sm_margin: int,
+    swap_ab: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     q, k, v, q_ranges, k_ranges = [
         maybe_contiguous(x) for x in (q, k, v, q_ranges, k_ranges)
@@ -335,6 +338,7 @@ def _flex_flash_attn_forward(
         out_type=out_type,
         deterministic=deterministic,
         sm_margin=sm_margin,
+        swap_ab=swap_ab,
     )
 
     return out, lse
@@ -553,6 +557,7 @@ class FlexFlashAttnFunc(torch.autograd.Function):
         disable_fwd_atomic_reduction=False,
         auto_range_merge=False,
         ref_block_size=None,
+        swap_ab=False,
     ):
         if softmax_scale is None:
             softmax_scale = q.shape[-1] ** (-0.5)
@@ -616,6 +621,7 @@ class FlexFlashAttnFunc(torch.autograd.Function):
             torch.float32,  # out_type
             deterministic,
             sm_margin,
+            swap_ab,
         )
 
         # Cast output to the same dtype as q
@@ -751,6 +757,7 @@ def flex_flash_attn_func(
     disable_fwd_atomic_reduction: bool = False,
     auto_range_merge: bool = False,
     ref_block_size: tuple[int, int] | None = None,
+    swap_ab: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     An interface similar to flash attention that doesn't require distributed environment, dispatch or undispatch.
@@ -922,4 +929,5 @@ def flex_flash_attn_func(
         disable_fwd_atomic_reduction,
         auto_range_merge,
         ref_block_size,
+        swap_ab,
     )
