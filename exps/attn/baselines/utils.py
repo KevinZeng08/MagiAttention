@@ -46,7 +46,7 @@ def block_sparse_available(
         # currently vsa only supports block size == 64
         return num_q_heads == num_kv_heads and block_size == 64
 
-    if attn_impl == "flashinfer":
+    if attn_impl == "flashinfer" or attn_impl == "fa2_sparse":
         # flashinfer doesn't support backward
         return wd == "fwd"
 

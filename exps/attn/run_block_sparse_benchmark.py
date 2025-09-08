@@ -383,6 +383,28 @@ def sparse_attn_benchmark(
 
             def fn():
                 return wrapper.run(q, k, v)
+        
+        elif attn_impl == "fa2_sparse":
+            try:
+                from block_sparse_attn import block_sparse_attn_func
+            except ImportError:
+                raise ImportError(
+                    "Please install FA2 sparse attention following https://github.com/mit-han-lab/Block-Sparse-Attention/blob/main/README.md.")
+
+            cu_seqlens = torch.arange(0, (b + 1) * seqlen, step=seqlen, dtype=torch.int32, device=device)
+            q = q.reshape(b * orig_seq_len_q, nhq, hd).contiguous()
+            k = k.reshape(b * orig_seq_len_k, nhk, hd).contiguous()
+            v = v.reshape(b * orig_seq_len_k, nhk, hd).contiguous()
+            head_mask_type = torch.tensor([1] * nhq, device=q.device, dtype=torch.int32)
+            streaming_info = None
+
+            def fn():
+                return block_sparse_attn_func(
+                    q, k, v, cu_seqlens, cu_seqlens, head_mask_type, streaming_info, block_mask,
+                    orig_seq_len_q, orig_seq_len_k, p_dropout=dropout_p, softmax_scale=softmax_scale,
+                    sparse_block_size=block_size
+                )
+
 
         elif attn_impl == "flex":
             try:
