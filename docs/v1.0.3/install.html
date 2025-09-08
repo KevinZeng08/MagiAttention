@@ -56,7 +56,7 @@
     <link rel="canonical" href="https://sandai-org.github.io/MagiAttention/docs/install.html" />
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Tutorial" href="tutorial.html" />
+    <link rel="next" title="QuickStart" href="quickstart.html" />
     <link rel="prev" title="User Guide" href="guide.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -335,8 +335,9 @@
   <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="tutorial.html">Tutorial</a></li>
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">QuickStart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="magi_api.html">API Reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="env_variables.html">Environment Variables</a></li>
 </ul>
 </div>
 </nav></div>
@@ -409,10 +410,10 @@
 <section id="step1-activate-an-ngc-pytorch-docker-container">
 <h2><a class="toc-backref" href="#id1" role="doc-backlink">Step1: Activate an NGC pytorch docker container</a><a class="headerlink" href="#step1-activate-an-ngc-pytorch-docker-container" title="Link to this heading">#</a></h2>
 <ul>
-<li><p>release note: <a class="reference external" href="https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-02.html#rel-25-02">here</a></p></li>
-<li><p>docker image version: nvcr.io/nvidia/pytorch:25.02-py3</p></li>
+<li><p>release note: <a class="reference external" href="https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-05.html#rel-25-05">here</a></p></li>
+<li><p>docker image version: nvcr.io/nvidia/pytorch:25.05-py3</p></li>
 <li><p>docker run command:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>--name<span class="w"> </span><span class="o">{</span>container_name<span class="o">}</span><span class="w"> </span>-v<span class="w"> </span><span class="o">{</span>host_mnt_root<span class="o">}</span>:<span class="o">{</span>container_mnt_root<span class="o">}</span><span class="w"> </span>-it<span class="w"> </span>-d<span class="w"> </span>--privileged<span class="w"> </span>--gpus<span class="w"> </span>all<span class="w"> </span>--network<span class="w"> </span>host<span class="w"> </span>--ipc<span class="w"> </span>host<span class="w"> </span>--ulimit<span class="w"> </span><span class="nv">memlock</span><span class="o">=</span>-1<span class="w"> </span>--ulimit<span class="w"> </span><span class="nv">stack</span><span class="o">=</span><span class="m">67108864</span><span class="w"> </span>nvcr.io/nvidia/pytorch:25.02-py3<span class="w"> </span>/bin/bash
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>--name<span class="w"> </span><span class="o">{</span>container_name<span class="o">}</span><span class="w"> </span>-v<span class="w"> </span><span class="o">{</span>host_mnt_root<span class="o">}</span>:<span class="o">{</span>container_mnt_root<span class="o">}</span><span class="w"> </span>-it<span class="w"> </span>-d<span class="w"> </span>--privileged<span class="w"> </span>--gpus<span class="w"> </span>all<span class="w"> </span>--network<span class="w"> </span>host<span class="w"> </span>--ipc<span class="w"> </span>host<span class="w"> </span>--ulimit<span class="w"> </span><span class="nv">memlock</span><span class="o">=</span>-1<span class="w"> </span>--ulimit<span class="w"> </span><span class="nv">stack</span><span class="o">=</span><span class="m">67108864</span><span class="w"> </span>nvcr.io/nvidia/pytorch:25.05-py3<span class="w"> </span>/bin/bash
 </pre></div>
 </div>
 </li>
