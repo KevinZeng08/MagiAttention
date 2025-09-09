@@ -56,6 +56,7 @@ struct CollectiveEpilogueFwd {
   static constexpr int NumEpilogueThreads = NumEpilogueThreads_;
   static constexpr bool DisableFwdAtomicReduction = DisableFwdAtomicReduction_;
   static constexpr bool Deterministic = Deterministic_;
+  static constexpr bool SwapAB = SwapAB_;
 
   static_assert(ArchTag::kMinComputeCapability >= 90 || CUTE_STATIC_V(size(ClusterShape{})) == 1);
   // static_assert(sizeof(Element) <= 2);
@@ -365,13 +366,20 @@ struct CollectiveEpilogueFwd {
     auto thread_mma = tiled_mma.get_thread_slice(thread_idx);
 
     // (MMA,MMA_M,MMA_K)
-    Tensor taccOcO = thread_mma.partition_C(cute::make_identity_tensor(select<0, 1>(TileShape_MNK_PV{})));
+    Tensor taccOcO = thread_mma.partition_C(cute::make_identity_tensor(select<!SwapAB ? 0 : 1, !SwapAB ? 1 : 0>(TileShape_MNK_PV{})));
     static_assert(decltype(size<0, 0>(taccOcO))::value == 2);
     static_assert(decltype(size<0, 1>(taccOcO))::value == 2);
 
     // (nrow=(2, MMA_M), ncol=(2, V, MMA_N))
     Tensor taccOcO_rowcol = make_tensor(taccOcO.data(), flash::convert_layout_acc_rowcol(taccOcO.layout()));
-    Tensor taccOcO_row = taccOcO_rowcol(_, _0{});
+    auto taccOcO_row = [&] {
+      if constexpr (!SwapAB) {
+        return taccOcO_rowcol(_, _0{});
+      } else {
+        return taccOcO_rowcol(_0{}, _);
+      }
+    }();
+    // Tensor taccOcO_row = taccOcO_rowcol(_, _0{});
 
     // MMA_M
     CUTE_STATIC_ASSERT_V(size(lse) == size(taccOcO_row));
@@ -399,7 +407,7 @@ struct CollectiveEpilogueFwd {
 #pragma unroll
       for (int mi = 0; mi < size(lse_prev); ++mi) {
         // Load lse_prev from gmem -> smem, and calculate lse_final
-        int const row = m_block * kBlockM + get<0>(taccOcO_row(mi));
+        int const row = m_block * kBlockM + get<!SwapAB ? 0 : 1>(taccOcO_row(mi));
         if (row >= seqlen_o) {
           lse(mi) = -INFINITY;
         }
@@ -442,12 +450,16 @@ struct CollectiveEpilogueFwd {
 
     if (!skip_correction) {
       // TODO: need reduce compute for pO, and add predicate k for pO
-      Tensor cO = cute::make_identity_tensor(select<0, 1>(TileShape_MNK_PV{})); // (BLK_M,BLK_K) -> (blk_m,blk_k)
+      Tensor cO = cute::make_identity_tensor(select<!SwapAB ? 0 : 1, !SwapAB ? 1 : 0>(TileShape_MNK_PV{})); // (BLK_M,BLK_K) -> (blk_m,blk_k)
       Tensor pO = make_tensor<bool>(make_shape(size<0>(cO), size<1>(cO)), make_stride(_1{}, _0{}));
       int bound = get<0>(params.shape_O) - (offset_o + m_block * kBlockM);
 #pragma unroll
-      for (int n = 0; n < size<0>(pO); ++n) {
-        pO(n, _0{}) = get<0>(cO(n, _0{})) < bound;
+      for (int n = 0; n < size<!SwapAB ? 0 : 1>(pO); ++n) {
+        if constexpr (!SwapAB) {
+          pO(n, _0{}) = get<0>(cO(n, _0{})) < bound;
+        } else {
+          pO(_0{}, n) = get<1>(cO(_0{}, n)) < bound;
+        }
       }
       Tensor tOpO = thr_copy_O.partition_D(pO);
 
@@ -460,8 +472,8 @@ struct CollectiveEpilogueFwd {
       cute::copy_if(tOpO, tOgPrevO, tOrPrevO_copy_view);
 
       // Correct output
-      Tensor tOrPrevO_rowcol = make_tensor(tOrPrevO.data(), flash::convert_layout_acc_rowcol(tOrPrevO.layout()));
-      Tensor tOrO_rowcol = make_tensor(tOrO.data(), flash::convert_layout_acc_rowcol(tOrO.layout()));
+      Tensor tOrPrevO_rowcol = make_tensor(tOrPrevO.data(), flash::convert_layout_acc_rowcol</*Transposed*/SwapAB>(tOrPrevO.layout()));
+      Tensor tOrO_rowcol = make_tensor(tOrO.data(), flash::convert_layout_acc_rowcol</*Transposed*/SwapAB>(tOrO.layout()));
       correct_output(tOrPrevO_rowcol, tOrO_rowcol, lse_prev, lse, lse_final);
     }
 

@@ -228,6 +228,18 @@ CUTLASS_DEVICE void convert_type_out(Tensor<Engine, Layout> const& tensor, Tenso
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+template <typename To_type, typename Engine, typename Layout>
+__forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tensor) {
+    using From_type = typename Engine::value_type;
+    constexpr int numel = decltype(size(tensor))::value;
+    cutlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
+    // HACK: this requires tensor to be "contiguous"
+    auto frag = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
+    return make_tensor(make_rmem_ptr<To_type>(&frag), tensor.layout());
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 // Blocks until all but N previous cp.async.commit_group operations have committed.
 // This differs from cute::cp_async_wait in that when N = 0 we don't call cp.async.wait_all
 // (which is equivalent to commit_group then wait_group 0).

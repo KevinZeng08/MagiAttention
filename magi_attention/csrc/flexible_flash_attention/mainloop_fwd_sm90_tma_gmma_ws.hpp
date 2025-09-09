@@ -59,19 +59,34 @@ struct CollectiveMainloopFwdSm90 {
   // kBlockM, kBlockN, kHeadDim
   using TileShape_MNK = TileShape_MNK_;
 
+  // Get the block size and head dimension from the TileShapeMNK for code readability
+  static constexpr int kBlockM = get<0>(TileShape_MNK{});
+  static constexpr int kBlockN = get<1>(TileShape_MNK{});
+  static constexpr int kHeadDim = get<2>(TileShape_MNK{});
+
   // TileShapeMNK for mma qv: kBlockM, kBlockN, kHeadDim
   // (kBlockM, kHeadDim) @ (kHeadDim, kBlockN) -> (kBlockM, kBlockN)
-  using TileShape_MNK_QV = Shape<decltype(get<0>(TileShape_MNK{})), decltype(get<1>(TileShape_MNK{})), decltype(get<2>(TileShape_MNK{}))>;
+  // SwapAB: (kBlockN, kHeadDim) @ (kHeadDim, kBlockM) -> (kBlockN, kBlockM)
+  using TileShape_MNK_QV = std::conditional_t<
+      !SwapAB_,
+      Shape<Int<kBlockM>, Int<kBlockN>, Int<kHeadDim>>, 
+      Shape<Int<kBlockN>, Int<kBlockM>, Int<kHeadDim>>>;
 
   // TileShapeMNK for mma pv: kBlockM, kHeadDim, kBlockN
   // (kBlockM, kBlockN) @ (kBlockN, kHeadDim) -> (kBlockM, kHeadDim)
   using TileShape_MNK_PV = Shape<decltype(get<0>(TileShape_MNK{})), decltype(get<2>(TileShape_MNK{})), decltype(get<1>(TileShape_MNK{}))>;
+  
+  using TileShape_MNK_PV_SS = std::conditional_t<
+      !SwapAB_,
+      Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>,
+      Shape<Int<kHeadDim>, Int<kBlockM>, Int<kBlockN>>>;
 
   using Element = Element_;
   using ElementAccum = ElementAccum_;
   using ArchTag = ArchTag_;
   static constexpr bool Has_softcap = Has_softcap_;
-  static constexpr bool MmaPV_is_RS = MmaPV_is_RS_;
+  static constexpr bool SwapAB = SwapAB_;
+  static constexpr bool MmaPV_is_RS = MmaPV_is_RS_ && !SwapAB_; // If SwapAB, we can't use RS GEMM because V^T is not in registers
   static constexpr bool IntraWGOverlap = IntraWGOverlap_;
 
   // By default, we use TMA for Q and KV to get better performance
@@ -86,11 +101,6 @@ struct CollectiveMainloopFwdSm90 {
   static constexpr cute::GMMA::Major MmaMajorV = GMMA::Major::MN;
   static constexpr cute::GMMA::Major TmaMajorV = GMMA::Major::MN;
 
-  // Get the block size and head dimension from the TileShapeMNK for code readability
-  static constexpr int kBlockM = get<0>(TileShape_MNK{});
-  static constexpr int kBlockN = get<1>(TileShape_MNK{});
-  static constexpr int kHeadDim = get<2>(TileShape_MNK{});
-
   using SeqlenInfo_t = flash::DistributedSeqlenInfo;
   using BlockMN_t = flash::BlockMN<SeqlenInfo_t, kBlockM, kBlockN>;
 
@@ -98,19 +108,26 @@ struct CollectiveMainloopFwdSm90 {
   // Leaving this option here for reference.
   static constexpr bool MmaQK_is_RS = false;
   using AtomLayoutQK = Layout<Shape<Int<kBlockM / 64>, _1, _1>>;
+  // using AtomLayoutQK = std::conditional_t<
+  //     !SwapAB_,
+  //     Layout<Shape<Int<kBlockM / 64>, _1, _1>>,
+  //     Layout<Shape<_1, Int<kBlockM / 64>, _1>>>;
   using TiledMmaQK = decltype(cute::make_tiled_mma(
       std::conditional_t<
           !MmaQK_is_RS,
-          decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShape_MNK>()),
-          decltype(cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShape_MNK>())>{},
+          decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShape_MNK_QV>()),
+          decltype(cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShape_MNK_QV>())>{},
       AtomLayoutQK{}));
 
   // Atom layout for PV is the same as QK
-  using AtomLayoutPV = AtomLayoutQK;
+  using AtomLayoutPV = std::conditional_t<
+      !SwapAB_,
+      Layout<Shape<Int<kBlockM / 64>, _1, _1>>,
+      Layout<Shape<_1, Int<kBlockM / 64>, _1>>>;
   using TiledMmaPV = decltype(cute::make_tiled_mma(
       std::conditional_t<
           !MmaPV_is_RS,
-          decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShape_MNK_PV, GMMA::Major::K, MmaMajorV>()),
+          decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShape_MNK_PV_SS, GMMA::Major::MN, MmaMajorV>()),
           decltype(cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShape_MNK_PV, GMMA::Major::K, MmaMajorV>())>{},
       AtomLayoutPV{}));
 
@@ -157,9 +174,15 @@ struct CollectiveMainloopFwdSm90 {
       std::conditional_t<MmaMajorV == GMMA::Major::K, cute::Step<_1, _2, _3>, cute::Step<_2, _1, _3>>{}));
 
   // Get the smem layout for P, used when MmaPV_is_RS is false
-  using SmemLayoutAtomP = decltype(cutlass::gemm::collective::detail::
-                                       ss_smem_selector<GMMA::Major::K, Element, decltype(cute::get<0>(TileShape_MNK{})), decltype(cute::get<1>(TileShape_MNK{}))>());
-  using SmemLayoutP = decltype(tile_to_shape(SmemLayoutAtomP{}, select<0, 1>(TileShape_MNK{})));
+  using SmemLayoutAtomP = std::conditional_t< // 对应SmemLayoutPOrigin
+    !SwapAB,
+  decltype(cutlass::gemm::collective::detail::
+                                       ss_smem_selector<GMMA::Major::K, Element, Int<kBlockM>, Int<kBlockN>>()),
+  decltype(cutlass::gemm::collective::detail::
+                                       ss_smem_selector<GMMA::Major::K, Element, Int<kBlockN>, Int<kBlockM>>())>;
+  // kBlockN, kBlockM?
+  using SmemLayoutP = decltype(tile_to_shape(SmemLayoutAtomP{}, select<!SwapAB ? 0 : 1, !SwapAB ? 1 : 0>(TileShape_MNK{})));
+  using SmemLayoutPP = decltype(composition(SmemLayoutP{}, make_layout(Shape<Int<kBlockM>, Int<kBlockN>>{}, GenRowMajor{}))); // for SwapAB
   using SmemCopyAtomP = Copy_Atom<cute::SM90_U32x4_STSM_N, Element>;
 
   // Get TMA copy op for Q and KV
@@ -623,6 +646,14 @@ struct CollectiveMainloopFwdSm90 {
         return make_tensor(make_smem_ptr(shared_storage.tensors.mainloop.smem_p.data()), SmemLayoutP{});
       }
     }();
+    Tensor sPP = [&] {
+      if constexpr (!SwapAB) {
+        // We might not have smem_p if !MmaPV_is_RS, just use smem_q as a placeholder since we don't use it
+        return make_tensor(make_smem_ptr(shared_storage.tensors.mainloop.smem_q.data()), SmemLayoutP{});
+      } else {
+        return make_tensor(make_smem_ptr(shared_storage.tensors.mainloop.smem_p.data()), SmemLayoutPP{});
+      }
+    }();
 
     if constexpr (!MmaQK_is_RS) {
       static_assert(
@@ -640,17 +671,28 @@ struct CollectiveMainloopFwdSm90 {
     TiledMmaPV tiled_mma_pv;
     auto wg_mma_qk = tiled_mma_qk.get_slice(warp_group_thread_layout(warp_group_idx));
     auto wg_mma_pv = tiled_mma_pv.get_slice(warp_group_thread_layout(warp_group_idx));
+    auto thr_mma_qk = tiled_mma_qk.get_thread_slice(thread_idx);
+    auto thr_mma_pv = tiled_mma_pv.get_thread_slice(thread_idx);
 
     auto smem_tiled_copy_P = make_tiled_copy_C(SmemCopyAtomP{}, tiled_mma_qk);
     auto smem_thr_copy_P = smem_tiled_copy_P.get_thread_slice(thread_idx);
 
     // Allocate "fragments/descriptors"
-    Tensor tSrQ = wg_mma_qk.partition_fragment_A(sQ);
-    Tensor tSrK = wg_mma_qk.partition_fragment_B(sK);
-    Tensor tOrV = wg_mma_pv.partition_fragment_B(sV);
-    Tensor tOsP = wg_mma_pv.partition_fragment_A(sP);
+    // We have to use the templated mma_partition_fragment_AB instead of cute::conditional_return or lambda,
+    // because some partition_fragment_A/B don't compile.
+    // https://stackoverflow.com/questions/50051473/if-constexpr-in-c17-does-not-work-in-a-non-templated-function
+    Tensor tSrQ = mma_partition_fragment_AB</*A=*/!SwapAB>(wg_mma_qk, sQ);
+    Tensor tSrK = mma_partition_fragment_AB</*A=*/SwapAB>(wg_mma_qk, sK);
+    Tensor tOrV = mma_partition_fragment_AB</*A=*/SwapAB>(wg_mma_pv, sV);
+    // Tensor tOsP = mma_partition_fragment_AB</*A=*/!SwapAB>(wg_mma_pv, sP);
+    // Tensor tSrQ = wg_mma_qk.partition_fragment_A(sQ);
+    // Tensor tSrK = wg_mma_qk.partition_fragment_B(sK);
+    // Tensor tOrV = wg_mma_pv.partition_fragment_B(sV);
+    // Tensor tOsP = wg_mma_pv.partition_fragment_A(sP);
     // if p is in registers, do we still need this step ?
     Tensor tPsP = smem_thr_copy_P.partition_D(cute::as_position_independent_swizzle_tensor(sP));
+    // smem pointer for P
+    auto mtPsP = thr_mma_qk.partition_C(sP);
 
     auto consumer_wait = [](auto& pipeline, auto& smem_pipe_read) {
       auto barrier_token = pipeline.consumer_try_wait(smem_pipe_read);
@@ -661,7 +703,7 @@ struct CollectiveMainloopFwdSm90 {
     int const seqlen_k = seqlen_info.seqlen_k;
     int n_block = n_block_max - 1;
 
-    flash::Mask<kBlockM, kBlockN, TiledMmaQK> mask(thread_idx, seqlen_q, seqlen_k);
+    flash::Mask<kBlockM, kBlockN, TiledMmaQK, SwapAB> mask(thread_idx, seqlen_q, seqlen_k);
 
     float softcap_val = params.softcap_val;
     // Softcapping needs to happen before masking since if we apply after masking, softcapping
@@ -696,11 +738,11 @@ struct CollectiveMainloopFwdSm90 {
     }
 
     if constexpr (IntraWGOverlap) {
-      Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
+      Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<!SwapAB ? 0 : 1, !SwapAB ? 1 : 0>(TileShape_MNK{}));
       consumer_wait(pipeline_k, smem_pipe_read);
 
       // launch Q @ K of n_block and wait for it to finish
-      flash::gemm</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
+      flash::gemm</*zero_init=*/true, /*wg_wait=*/-1, /*SwapAB*/SwapAB>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
       warpgroup_wait<0>();
 
       // Signal that the current stage's K smem has been used up, can continue loading subsequent K
@@ -752,19 +794,41 @@ struct CollectiveMainloopFwdSm90 {
       // }
 
       // Convert layout and type from tSrS to tOrP
-      Tensor tOrP_acc = make_tensor(tSrS.data(), flash::convert_layout_acc_Aregs<TiledMmaPV>(tSrS.layout()));
-      Tensor tOrP = make_tensor_like<Element>(tOrP_acc);
-      convert_type_out(tOrP_acc, tOrP);
+      // 这是循环里PV GEMM的输入
+      auto tOrP = [&] {
+        if constexpr (!SwapAB) {
+          Tensor tOrP_acc = make_tensor(tSrS.data(), flash::convert_layout_acc_Aregs<TiledMmaPV>(tSrS.layout()));
+          Tensor tOrP = make_tensor_like<Element>(tOrP_acc);
+          convert_type_out(tOrP_acc, tOrP);
+          return tOrP;
+        } else {
+          Tensor rP = flash::convert_type<Element>(tSrS);
+          // if (bidb == 1 && bidh == 0 && thread_idx == 255 && m_block == 0) {
+          //     printf("========rP=======\n");
+          //     print_tensor(rP);
+          //     printf("========mtPsP=======\n");
+          //     print_tensor(mtPsP);
+          // }
+          cute::copy(rP, mtPsP);
+          return thr_mma_pv.partition_fragment_B(sPP);
+        }
+      }();
+
+      // if (bidb == 1 && bidh == 0 && thread_idx == 255 && m_block == 0) {
+      //   printf("============================================ tOrP before GEMM m_block: %d ==============================\n", m_block);
+      //   print_tensor(tOrP);
+      // }
+      
 
       // Write tOrP to smem
-      if constexpr (!MmaPV_is_RS) {
-        write_P_to_smem(tOrP);
-      }
+      // if constexpr (!MmaPV_is_RS) {
+      //   write_P_to_smem(tOrP);
+      // }
 
       // what's the purpose of this fence?
-      if constexpr (!MmaPV_is_RS) {
-        arrive_on_P_write_barrier();
-      }
+      // if constexpr (!MmaPV_is_RS) {
+      //   arrive_on_P_write_barrier();
+      // }
 
       --n_block;
 
@@ -786,7 +850,7 @@ struct CollectiveMainloopFwdSm90 {
         ++smem_pipe_read;
 
         // Partition the fragment C tensor into a new tensor tSrS, which is used to store the result of the Q@K matrix multiplication for n_block
-        Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<0, 1>(TileShape_MNK{}));
+        Tensor tSrS = partition_fragment_C(tiled_mma_qk, select<!SwapAB ? 0 : 1, !SwapAB ? 1 : 0>(TileShape_MNK{}));
 
         // If UseSchedulerBarrier is not enabled, all threads need to call consumer_wait, otherwise only threads in the 0th mma warp group call consumer_wait
         if (!UseSchedulerBarrier || warp_group_idx == 0) {
@@ -797,7 +861,7 @@ struct CollectiveMainloopFwdSm90 {
         warp_scheduler_barrier_sync();
 
         // Do Q @ K of n_block
-        flash::gemm</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
+        flash::gemm</*zero_init=*/true, /*wg_wait=*/-1, /*SwapAB*/SwapAB>(tiled_mma_qk, tSrQ, tSrK(_, _, _, smem_pipe_read.index()), tSrS);
         if constexpr (RescaleOBeforeGemm) {
           softmax.rescale_o(tOrO, scores_scale);
         }
@@ -808,8 +872,8 @@ struct CollectiveMainloopFwdSm90 {
         }
 
         // Do p @ v of n_block + 1
-        flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(
-            tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
+        flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB*/SwapAB>(
+            tiled_mma_pv, tOrP, tOrV(_, _, _, smem_pipe_read_v.index()), tOrO);
 
         // Arrive on the next mma warp group's named barrier
         warp_scheduler_barrier_arrive();
@@ -850,12 +914,19 @@ struct CollectiveMainloopFwdSm90 {
         pipeline_v.consumer_release(smem_pipe_read_v); // release V
 
         // Convert layout and type from tSrS to tOrP
-        convert_type_out(make_tensor(tSrS.data(), tOrP.layout()), tOrP);
+        // 准备下一个PV GEMM的输入
+        if constexpr (!SwapAB) {
+            convert_type_out(make_tensor(tSrS.data(), tOrP.layout()), tOrP);
+        } else {
+          // TODO: should get layout for tOrP 并且把tSrS的data，写入到P的smem里
+          Tensor rP = flash::convert_type<Element>(tSrS);
+          cute::copy(rP, mtPsP);
+        }
 
         // Write tOrP to smem
-        if constexpr (!MmaPV_is_RS) {
-          write_P_to_smem(tOrP);
-        }
+        // if constexpr (!MmaPV_is_RS) {
+        //   write_P_to_smem(tOrP);
+        // }
 
         // Only rescale tOrO if RescaleOBeforeGemm is not enabled
         if constexpr (!RescaleOBeforeGemm) {
@@ -863,9 +934,9 @@ struct CollectiveMainloopFwdSm90 {
         }
 
         // what's the purpose of this fence?
-        if constexpr (!MmaPV_is_RS) {
-          arrive_on_P_write_barrier();
-        }
+        // if constexpr (!MmaPV_is_RS) {
+        //   arrive_on_P_write_barrier();
+        // }
       };
 
       // Separate masking iterations on the right for causal and bi-causal attention, because they are both bottom-right aligned
@@ -914,7 +985,7 @@ struct CollectiveMainloopFwdSm90 {
       consumer_wait(pipeline_v, smem_pipe_read);
 
       // Do P @ V for the most left n_block
-      flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_pv, cute::conditional_return<MmaPV_is_RS>(tOrP, tOsP), tOrV(_, _, _, smem_pipe_read.index()), tOrO);
+      flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*Transposed*/SwapAB>(tiled_mma_pv, tOrP, tOrV(_, _, _, smem_pipe_read.index()), tOrO);
 
       // if (bidb == 1 && bidh == 0 && thread_idx == 255 && m_block == 1) {
       //     printf("============================================ tOrO m_block: %d ==============================\n", m_block);

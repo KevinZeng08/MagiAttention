@@ -365,13 +365,18 @@ class FlashAttnFwdSm90 {
       ) {
         // If there's tanh softcap, the scaling will be done before tanh.
         float softmax_scale_log2 = params.mainloop.softmax_scale_log2;
-        flash::Softmax<2 * (2 * kBlockM / NumMmaThreads), /*Max_offset=*/0> softmax(softmax_scale_log2);
-        typename flash::Softmax<
-            2 * (2 * kBlockM / NumMmaThreads),
-            /*Max_offset=*/0>::TensorT scores_scale;
         // Attention output (GEMM-II) accumulator.
-        Tensor tOrO = partition_fragment_C(tiled_mma_pv, select<0, 1>(TileShape_MNK_PV{}));
+        Tensor tOrO = partition_fragment_C(tiled_mma_pv, select<!SwapAB ? 0 : 1, !SwapAB ? 1 : 0>(TileShape_MNK_PV{}));
         clear(tOrO);
+        // TODO: 这里的kNRows为什么这么算？什么不用2 * size<1>(acc_o)了？
+        // flash::Softmax<2 * (2 * kBlockM / NumMmaThreads), /*Max_offset=*/0> softmax(softmax_scale_log2);
+        // typename flash::Softmax<
+        //     2 * (2 * kBlockM / NumMmaThreads), // 为什么不用size<1>tOrO了?
+        //     /*Max_offset=*/0>::TensorT scores_scale;
+        flash::Softmax<! SwapAB ? 2 * (2 * kBlockM / NumMmaThreads) : size<0>(tOrO) / 2 * size<2>(tOrO), /*Max_offset=*/0, /*SwapAB*/SwapAB> softmax(softmax_scale_log2);
+        typename flash::Softmax<
+            ! SwapAB ? 2 * (2 * kBlockM / NumMmaThreads) : size<0>(tOrO) / 2 * size<2>(tOrO),
+            /*Max_offset=*/0, /*SwapAB=*/SwapAB>::TensorT scores_scale;
         bool tile_valid = false;
         BlockCoordType block_coord_raw = work_tile_info.get_block_coord(params.scheduler);
         // get block_coord without deterministic message
